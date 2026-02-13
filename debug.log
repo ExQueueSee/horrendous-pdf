@@ -1,8 +1,0 @@
-[DEBUG] About to call _load_settings
-[DEBUG] _load_settings called
-[DEBUG] JSON loaded OK, theme_mode='light'
-[DEBUG] restoreGeometry OK
-[DEBUG] restoreState OK
-[DEBUG] about to set theme, saved_mode='light'
-[DEBUG] _set_theme_mode('light') -> dark_mode=False
-[DEBUG] _load_settings completed

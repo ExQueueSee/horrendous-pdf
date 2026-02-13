@@ -23,6 +23,7 @@ env/
 settings.json
 app.py.bak
 debug_log.txt
+app.spec
 
 # OS
 Thumbs.db
