@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+dist/
+build/
+*.spec.bak
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# PyInstaller
+*.exe
+
+# IDE
+.vscode/
+.idea/
+
+# App generated
+settings.json
+app.py.bak
+debug_log.txt
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
