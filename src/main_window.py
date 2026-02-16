@@ -2912,9 +2912,31 @@ class PDFEditorWindow(QMainWindow):
                     px = rect.x0 * scale
                     py = rect.y0 * scale + y_off
 
+                    # Read text color from the DA string (e.g. "1 0 0 rg ...")
+                    text_color = QColor(0, 0, 0)
+                    da_str = ""
+                    try:
+                        da_val = self._doc.xref_get_key(annot.xref, "DA")
+                        if da_val[0] == "string":
+                            da_str = da_val[1]
+                    except Exception:
+                        pass
+                    if da_str:
+                        parts = da_str.split()
+                        try:
+                            rg_idx = parts.index("rg")
+                            if rg_idx >= 3:
+                                r = float(parts[rg_idx - 3])
+                                g = float(parts[rg_idx - 2])
+                                b = float(parts[rg_idx - 1])
+                                text_color = QColor(
+                                    int(r * 255), int(g * 255), int(b * 255)
+                                )
+                        except (ValueError, IndexError):
+                            pass
+
                     text_item = QGraphicsTextItem(text)
-                    text_item.setDefaultTextColor(
-                        t.get("text_color", QColor(0, 0, 0)))
+                    text_item.setDefaultTextColor(text_color)
                     text_item.setFont(QFont("Arial", 14))
                     text_item.setPos(px, py)
                     text_item.setFlags(
@@ -3461,6 +3483,7 @@ class PDFEditorWindow(QMainWindow):
                 elif isinstance(item, QGraphicsTextItem):
                     text = item.toPlainText()
                     pos = item.pos()
+                    tc = item.defaultTextColor()
                     fitz_point = fitz.Point(pos.x(), pos.y() - y_off) * inv_mat
                     rect_w = item.boundingRect().width()
                     rect_h = item.boundingRect().height()
@@ -3469,7 +3492,10 @@ class PDFEditorWindow(QMainWindow):
                         fitz_point.x + rect_w / (self._dpi / 72),
                         fitz_point.y + rect_h / (self._dpi / 72)
                     )
-                    annot = page.add_freetext_annot(fitz_rect, text, fontsize=11)
+                    annot = page.add_freetext_annot(
+                        fitz_rect, text, fontsize=11,
+                        text_color=(tc.redF(), tc.greenF(), tc.blueF()),
+                    )
                     annot.update()
 
             if path == self._file_path:
