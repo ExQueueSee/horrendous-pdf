@@ -2755,6 +2755,9 @@ class PDFEditorWindow(QMainWindow):
         Handles:
         - 'Text' (sticky-note icons)
         - 'Highlight' (translucent highlight rectangles)
+        - 'Ink' (freehand pen drawings)
+        - 'Square' (rectangle annotations)
+        - 'FreeText' (text box annotations)
         """
         if self._doc is None or self._scene is None:
             return
@@ -2771,7 +2774,6 @@ class PDFEditorWindow(QMainWindow):
                     info = annot.info
                     text = info.get("content", "") or annot.get_text()
                     author = info.get("title", "")
-                    # annot.rect top-left in points → pixel coordinates
                     rect = annot.rect
                     px = rect.x0 * scale
                     py = rect.y0 * scale + y_off
@@ -2783,15 +2785,13 @@ class PDFEditorWindow(QMainWindow):
                         border_color=t["note_border"],
                     )
                     icon.setPos(px, py)
-                    icon.setData(2, "from_pdf")  # mark as pre-existing
+                    icon.setData(2, "from_pdf")
                     self._scene.addItem(icon)
 
-                    # Register in annotations model
                     ann = Annotation(Annotation.NOTE, page_num, text=text)
                     self._annotations.append(ann)
 
                 elif annot.type[0] == fitz.PDF_ANNOT_HIGHLIGHT:
-                    # Reconstruct highlight colour from the annotation
                     colors = annot.colors
                     stroke = colors.get("stroke") or colors.get("fill")
                     opacity = annot.opacity if annot.opacity is not None else 0.3
@@ -2803,12 +2803,11 @@ class PDFEditorWindow(QMainWindow):
                             int(opacity * 255),
                         )
                     else:
-                        qc = QColor(255, 255, 0, 80)  # default yellow
+                        qc = QColor(255, 255, 0, 80)
 
                     brush = QBrush(qc)
                     pen = QPen(Qt.NoPen)
 
-                    # Highlight annots store quad-points (4 corners per quad)
                     vertices = annot.vertices
                     if vertices and len(vertices) >= 4:
                         for qi in range(0, len(vertices) - 3, 4):
@@ -2823,7 +2822,6 @@ class PDFEditorWindow(QMainWindow):
                             hi.setData(0, "annotation")
                             hi.setData(2, "from_pdf")
                     else:
-                        # Fallback: use the annotation bounding rect
                         rect = annot.rect
                         r = QRectF(
                             rect.x0 * scale,
@@ -2836,9 +2834,98 @@ class PDFEditorWindow(QMainWindow):
                         hi.setData(0, "annotation")
                         hi.setData(2, "from_pdf")
 
-                    # Register in sidebar
                     ann = Annotation(Annotation.HIGHLIGHT, page_num,
                                      color=qc.name())
+                    self._annotations.append(ann)
+
+                elif annot.type[0] == fitz.PDF_ANNOT_INK:
+                    # Freehand pen drawing
+                    colors = annot.colors
+                    stroke = colors.get("stroke")
+                    if stroke:
+                        qc = QColor(
+                            int(stroke[0] * 255),
+                            int(stroke[1] * 255),
+                            int(stroke[2] * 255),
+                        )
+                    else:
+                        qc = QColor(255, 0, 0)
+
+                    border = annot.border
+                    width = border.get("width", 2.0) if border else 2.0
+                    pen_width = width * scale
+
+                    ink_paths = annot.vertices
+                    for pts in (ink_paths or []):
+                        if len(pts) < 2:
+                            continue
+                        path = QPainterPath()
+                        first = pts[0]
+                        path.moveTo(first[0] * scale, first[1] * scale + y_off)
+                        for p in pts[1:]:
+                            path.lineTo(p[0] * scale, p[1] * scale + y_off)
+                        pen = QPen(qc, pen_width, Qt.SolidLine,
+                                   Qt.RoundCap, Qt.RoundJoin)
+                        path_item = self._scene.addPath(path, pen)
+                        path_item.setData(0, "annotation")
+                        path_item.setData(2, "from_pdf")
+
+                    ann = Annotation(Annotation.FREEHAND, page_num)
+                    self._annotations.append(ann)
+
+                elif annot.type[0] == fitz.PDF_ANNOT_SQUARE:
+                    # Rectangle annotation
+                    colors = annot.colors
+                    stroke = colors.get("stroke")
+                    if stroke:
+                        qc = QColor(
+                            int(stroke[0] * 255),
+                            int(stroke[1] * 255),
+                            int(stroke[2] * 255),
+                        )
+                    else:
+                        qc = QColor(255, 0, 0)
+
+                    border = annot.border
+                    width = border.get("width", 2.0) if border else 2.0
+                    pen_width = width * scale
+
+                    rect = annot.rect
+                    r = QRectF(
+                        rect.x0 * scale,
+                        rect.y0 * scale + y_off,
+                        (rect.x1 - rect.x0) * scale,
+                        (rect.y1 - rect.y0) * scale,
+                    )
+                    pen = QPen(qc, pen_width)
+                    rect_item = self._scene.addRect(r, pen, QBrush(Qt.NoBrush))
+                    rect_item.setData(0, "annotation")
+                    rect_item.setData(2, "from_pdf")
+
+                    ann = Annotation(Annotation.RECT, page_num)
+                    self._annotations.append(ann)
+
+                elif annot.type[0] == fitz.PDF_ANNOT_FREE_TEXT:
+                    # Text box annotation
+                    text = annot.info.get("content", "") or annot.get_text()
+                    rect = annot.rect
+                    px = rect.x0 * scale
+                    py = rect.y0 * scale + y_off
+
+                    text_item = QGraphicsTextItem(text)
+                    text_item.setDefaultTextColor(
+                        t.get("text_color", QColor(0, 0, 0)))
+                    text_item.setFont(QFont("Arial", 14))
+                    text_item.setPos(px, py)
+                    text_item.setFlags(
+                        QGraphicsTextItem.ItemIsMovable
+                        | QGraphicsTextItem.ItemIsSelectable
+                    )
+                    text_item.setData(0, "annotation")
+                    text_item.setData(2, "from_pdf")
+                    self._scene.addItem(text_item)
+
+                    ann = Annotation(Annotation.TEXT, page_num, text=text)
                     self._annotations.append(ann)
 
         # Rebuild the list with proper scene-item references
