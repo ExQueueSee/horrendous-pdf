@@ -3325,7 +3325,7 @@ class PDFEditorWindow(QMainWindow):
                     for i in range(path_obj.elementCount()):
                         e = path_obj.elementAt(i)
                         pt = fitz.Point(e.x, e.y - y_off) * inv_mat
-                        points.append(pt)
+                        points.append((pt.x, pt.y))
                     if len(points) >= 2:
                         annot = page.add_ink_annot([points])
                         color_str = item.pen().color().name()
