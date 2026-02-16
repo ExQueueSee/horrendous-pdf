@@ -3,7 +3,9 @@
 import fitz
 from PyQt5.QtWidgets import (
     QGraphicsView, QGraphicsTextItem, QGraphicsPixmapItem, QGraphicsItem,
-    QInputDialog, QFileDialog, QMessageBox,
+    QGraphicsRectItem, QGraphicsPathItem,
+    QInputDialog, QFileDialog, QMessageBox, QMenu,
+    QDialog, QDialogButtonBox, QVBoxLayout, QLabel, QTextEdit,
 )
 from PyQt5.QtGui import (
     QPainter, QPen, QColor, QBrush, QFont, QPainterPath, QPixmap, QTransform,
@@ -537,6 +539,67 @@ class PDFGraphicsView(QGraphicsView):
                 event.accept()
                 return True
         return super().viewportEvent(event)
+
+    def contextMenuEvent(self, event):
+        """Right-click context menu for annotations and text items."""
+        pos = self.mapToScene(event.pos())
+        items = self.scene().items(pos) if self.scene() else []
+        target = None
+        for it in items:
+            tag = it.data(0)
+            if tag in ("annotation", "sticky_note"):
+                target = it
+                break
+        if target is None:
+            return super().contextMenuEvent(event)
+
+        from src.items.sticky_note import StickyNoteItem
+        is_note = isinstance(target, StickyNoteItem)
+        is_text = (target.data(0) == "annotation"
+                   and isinstance(target, QGraphicsTextItem))
+
+        menu = QMenu()
+        act_edit = None
+        if is_note:
+            act_edit = menu.addAction("✏ Edit Note")
+        elif is_text:
+            act_edit = menu.addAction("✏ Edit Text")
+        act_delete = menu.addAction("🗑 Delete")
+
+        chosen = menu.exec_(event.globalPos())
+        if chosen is None:
+            return
+
+        if chosen == act_delete:
+            self.scene().removeItem(target)
+            self._push_undo("remove", [target])
+            self.undo_redo_changed.emit()
+        elif chosen == act_edit:
+            if is_note:
+                target._open_edit_dialog()
+                self.undo_redo_changed.emit()
+            elif is_text:
+                self._edit_text_item_dialog(target)
+
+    def _edit_text_item_dialog(self, text_item):
+        """Open a dialog to edit a QGraphicsTextItem."""
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Edit Text")
+        layout = QVBoxLayout(dlg)
+        edit = QTextEdit()
+        edit.setPlainText(text_item.toPlainText())
+        layout.addWidget(QLabel("Text:"))
+        layout.addWidget(edit)
+        btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        btns.accepted.connect(dlg.accept)
+        btns.rejected.connect(dlg.reject)
+        layout.addWidget(btns)
+        dlg.resize(350, 200)
+        if dlg.exec_() == QDialog.Accepted:
+            new_text = edit.toPlainText()
+            if new_text != text_item.toPlainText():
+                text_item.setPlainText(new_text)
+                self.undo_redo_changed.emit()
 
     def mousePressEvent(self, event):
         if event.button() != Qt.LeftButton:

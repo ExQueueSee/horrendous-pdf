@@ -1416,8 +1416,20 @@ class PDFEditorWindow(QMainWindow):
         self._view.viewport().installEventFilter(self)
 
     def eventFilter(self, obj, event):
-        """Handle link rectangle drawing on the graphics view viewport."""
+        """Handle link rectangle drawing on the graphics view viewport
+        and Delete key in the annotation list."""
         from PyQt5.QtCore import QEvent
+
+        # Delete key in annotation list
+        if obj is self._ann_list and event.type() == QEvent.KeyPress:
+            if event.key() in (Qt.Key_Delete, Qt.Key_Backspace):
+                list_item = self._ann_list.currentItem()
+                if list_item is not None:
+                    scene_item = list_item.data(Qt.UserRole)
+                    if scene_item is not None and scene_item.scene() is not None:
+                        self._delete_scene_item(scene_item)
+                return True
+
         if not getattr(self, "_link_drawing", False):
             return super().eventFilter(obj, event)
 
@@ -2232,6 +2244,10 @@ class PDFEditorWindow(QMainWindow):
         self._ann_dock.setObjectName("ann_dock")
         self._ann_dock.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
         self._ann_list = QListWidget()
+        self._ann_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self._ann_list.customContextMenuRequested.connect(self._ann_list_context_menu)
+        self._ann_list.itemClicked.connect(self._ann_list_item_clicked)
+        self._ann_list.installEventFilter(self)
         self._ann_dock.setWidget(self._ann_list)
         self.addDockWidget(Qt.RightDockWidgetArea, self._ann_dock)
 
@@ -2770,13 +2786,9 @@ class PDFEditorWindow(QMainWindow):
                     icon.setData(2, "from_pdf")  # mark as pre-existing
                     self._scene.addItem(icon)
 
-                    # Also register in sidebar
+                    # Register in annotations model
                     ann = Annotation(Annotation.NOTE, page_num, text=text)
                     self._annotations.append(ann)
-                    label = f"[P{page_num + 1}] note"
-                    if text:
-                        label += f": {text[:30]}"
-                    self._ann_list.addItem(QListWidgetItem(label))
 
                 elif annot.type[0] == fitz.PDF_ANNOT_HIGHLIGHT:
                     # Reconstruct highlight colour from the annotation
@@ -2828,8 +2840,9 @@ class PDFEditorWindow(QMainWindow):
                     ann = Annotation(Annotation.HIGHLIGHT, page_num,
                                      color=qc.name())
                     self._annotations.append(ann)
-                    label = f"[P{page_num + 1}] highlight"
-                    self._ann_list.addItem(QListWidgetItem(label))
+
+        # Rebuild the list with proper scene-item references
+        self._rebuild_annotation_list()
 
     def _ensure_visible_tiles(self):
         """Add tiles for the visible viewport region; remove far-away ones."""
@@ -3084,43 +3097,169 @@ class PDFEditorWindow(QMainWindow):
         self._statusbar.showMessage(f"Added {ann.kind} annotation on page {ann.page + 1}")
 
     def _rebuild_annotation_list(self):
-        """Rebuild the sidebar list from items actually present in the scene."""
+        """Rebuild the sidebar list from items actually present in the scene.
+        Each QListWidgetItem stores the scene graphics item in Qt.UserRole."""
         self._ann_list.clear()
         if not self._scene:
             return
         for item in self._scene.items():
             tag = item.data(0)
+            list_item = None
             if tag == "sticky_note" and isinstance(item, StickyNoteItem):
                 page = self._view.page_at_y(item.pos().y())
                 text = item.note_text()
                 label = f"[P{page + 1}] note"
                 if text:
                     label += f": {text[:30]}"
-                self._ann_list.addItem(QListWidgetItem(label))
+                list_item = QListWidgetItem(label)
             elif tag == "annotation":
                 if isinstance(item, QGraphicsPathItem):
                     page = self._view.page_at_y(item.boundingRect().center().y())
-                    self._ann_list.addItem(QListWidgetItem(f"[P{page + 1}] freehand"))
+                    list_item = QListWidgetItem(f"[P{page + 1}] freehand")
                 elif isinstance(item, QGraphicsRectItem):
                     page = self._view.page_at_y(item.rect().center().y())
                     brush = item.brush()
                     if brush.style() != Qt.NoBrush and brush.color().alpha() > 0 and brush.color().alpha() < 255:
-                        self._ann_list.addItem(QListWidgetItem(f"[P{page + 1}] highlight"))
+                        list_item = QListWidgetItem(f"[P{page + 1}] highlight")
                     else:
-                        self._ann_list.addItem(QListWidgetItem(f"[P{page + 1}] rectangle"))
+                        list_item = QListWidgetItem(f"[P{page + 1}] rectangle")
                 elif isinstance(item, QGraphicsTextItem):
                     page = self._view.page_at_y(item.pos().y())
                     text = item.toPlainText()
                     label = f"[P{page + 1}] text"
                     if text:
                         label += f": {text[:30]}"
-                    self._ann_list.addItem(QListWidgetItem(label))
+                    list_item = QListWidgetItem(label)
             elif tag == "edit_image" and isinstance(item, QGraphicsPixmapItem):
                 page = self._view.page_at_y(item.pos().y())
                 src = item.data(1) or "image"
                 name = os.path.basename(src) if src else "image"
-                self._ann_list.addItem(QListWidgetItem(f"[P{page + 1}] image: {name[:30]}"))
+                list_item = QListWidgetItem(f"[P{page + 1}] image: {name[:30]}")
 
+            if list_item is not None:
+                list_item.setData(Qt.UserRole, item)
+                self._ann_list.addItem(list_item)
+
+    # -- annotation list interactions ---------------------------------------
+    def _ann_list_item_clicked(self, list_item):
+        """Navigate to the annotation's page and flash-highlight it."""
+        scene_item = list_item.data(Qt.UserRole)
+        if scene_item is None or scene_item.scene() is None:
+            return
+        # Get bounding rect in scene coordinates
+        rect = scene_item.sceneBoundingRect()
+        page = self._view.page_at_y(rect.center().y())
+
+        # Navigate to the page
+        if 0 <= page < self._total_pages:
+            self._current_page = page
+            self._updating_spinner = True
+            self._page_spin.setValue(page + 1)
+            self._updating_spinner = False
+            self._update_ui_state()
+
+        # Scroll to center the item and flash it
+        self._view.centerOn(rect.center())
+        self._flash_scene_item(rect)
+
+    def _flash_scene_item(self, rect):
+        """Draw a brief pulsing rectangle around the given scene rect."""
+        # Remove previous flash if any
+        if hasattr(self, '_flash_rect') and self._flash_rect and self._flash_rect.scene():
+            self._scene.removeItem(self._flash_rect)
+        # Create a highlight overlay slightly larger than the item
+        margin = 6
+        flash_rect = QRectF(
+            rect.x() - margin, rect.y() - margin,
+            rect.width() + 2 * margin, rect.height() + 2 * margin
+        )
+        pen = QPen(QColor(0, 120, 255), 3)
+        brush = QBrush(QColor(0, 120, 255, 40))
+        self._flash_rect = self._scene.addRect(flash_rect, pen, brush)
+        self._flash_rect.setZValue(9999)
+
+        # Fade out and remove after 800ms
+        effect = QGraphicsOpacityEffect(self)
+        self._flash_rect.setGraphicsEffect(effect)
+        anim = QPropertyAnimation(effect, b"opacity", self)
+        anim.setDuration(800)
+        anim.setStartValue(1.0)
+        anim.setEndValue(0.0)
+        anim.setEasingCurve(QEasingCurve.OutCubic)
+        flash_ref = self._flash_rect  # prevent GC
+        anim.finished.connect(lambda: (
+            self._scene.removeItem(flash_ref)
+            if flash_ref.scene() is not None else None
+        ))
+        self._flash_anim = anim  # prevent GC
+        anim.start()
+
+    def _ann_list_context_menu(self, pos):
+        """Show context menu for the annotation list."""
+        list_item = self._ann_list.itemAt(pos)
+        if list_item is None:
+            return
+        scene_item = list_item.data(Qt.UserRole)
+        if scene_item is None or scene_item.scene() is None:
+            return
+
+        menu = QMenu(self)
+        is_note = isinstance(scene_item, StickyNoteItem)
+        is_text = (scene_item.data(0) == "annotation"
+                   and isinstance(scene_item, QGraphicsTextItem))
+
+        if is_note:
+            act_edit = menu.addAction("✏ Edit Note")
+        elif is_text:
+            act_edit = menu.addAction("✏ Edit Text")
+        else:
+            act_edit = None
+
+        act_delete = menu.addAction("🗑 Delete")
+
+        chosen = menu.exec_(self._ann_list.mapToGlobal(pos))
+        if chosen is None:
+            return
+
+        if chosen == act_delete:
+            self._delete_scene_item(scene_item)
+        elif chosen == act_edit:
+            if is_note:
+                scene_item._open_edit_dialog()
+                self._rebuild_annotation_list()
+            elif is_text:
+                self._edit_text_annotation(scene_item)
+
+    def _edit_text_annotation(self, text_item):
+        """Open a dialog to edit a QGraphicsTextItem annotation."""
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Edit Text")
+        layout = QVBoxLayout(dlg)
+        edit = QTextEdit()
+        edit.setPlainText(text_item.toPlainText())
+        layout.addWidget(QLabel("Text:"))
+        layout.addWidget(edit)
+        btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        btns.accepted.connect(dlg.accept)
+        btns.rejected.connect(dlg.reject)
+        layout.addWidget(btns)
+        dlg.resize(350, 200)
+        if dlg.exec_() == QDialog.Accepted:
+            new_text = edit.toPlainText()
+            if new_text != text_item.toPlainText():
+                text_item.setPlainText(new_text)
+                self._rebuild_annotation_list()
+                self._statusbar.showMessage("Text annotation updated.")
+
+    def _delete_scene_item(self, scene_item):
+        """Remove a scene annotation item with undo support."""
+        scene = scene_item.scene()
+        if scene is None:
+            return
+        scene.removeItem(scene_item)
+        self._view._push_undo("remove", [scene_item])
+        self._rebuild_annotation_list()
+        self._statusbar.showMessage("Annotation deleted.")
     # -- save ---------------------------------------------------------------
     def _save_file(self):
         if not self._file_path:
